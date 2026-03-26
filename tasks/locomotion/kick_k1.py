@@ -32,9 +32,9 @@ class KickPolicy(Policy):
         self._model.eval()
 
         self.actor_obs_history_length = cfg.actor_obs_history_length
-        self.action_scale = (
-            cfg.action_scale * self.robot.effort_limit / self.robot.joint_stiffness
-        ).to(self.cfg.device)
+        # Match training-time action application:
+        # dof_target = default_dof_pos + action_scale * action
+        self.action_scale = cfg.action_scale
 
         self.obs_history = None
         self.last_action = torch.zeros(len(self.cfg.policy_joint_names), dtype=torch.float32)
@@ -64,14 +64,14 @@ class KickPolicy(Policy):
             [
                 0.0,
                 0.0,
-                0.2,
-                -1.3,
                 0.0,
-                -0.5,
-                0.2,
-                1.3,
+                -1.35,
                 0.0,
-                0.5,
+                0.0,
+                0.0,
+                1.35,
+                0.0,
+                0.0,
             ],
             dtype=torch.float32,
         )
@@ -119,13 +119,20 @@ class KickPolicy(Policy):
             except Exception:
                 pass
 
+        fallback_rel_xy = torch.as_tensor(
+            self.cfg.missing_ball_rel_xy,
+            dtype=torch.float32,
+            device=base_quat.device,
+        )[:2]
+
         if not self._ball_warned:
             print(
                 f"Warning: ball relative xy unavailable. "
+                f"Using fallback {fallback_rel_xy.tolist()}. "
                 f"Set controller.ball_rel_xy or add body '{self.cfg.ball_body_name}' in MuJoCo model."
             )
             self._ball_warned = True
-        return torch.zeros(2, dtype=torch.float32, device=base_quat.device)
+        return fallback_rel_xy
 
     def compute_observation(self) -> torch.Tensor:
         dof_pos = self.robot.data.joint_pos
@@ -184,7 +191,7 @@ class KickPolicy(Policy):
         self.last_action = action.clone()
 
         dof_targets = self.robot.default_joint_pos.clone()
-        mapped_action = action * self.action_scale[self.real2sim_joint_map]
+        mapped_action = action * self.action_scale
         dof_targets[self.real2sim_joint_map] = (
             self.robot.default_joint_pos[self.real2sim_joint_map] + mapped_action
         )
@@ -197,9 +204,10 @@ class KickPolicyCfg(PolicyCfg):
     constructor = KickPolicy
     checkpoint_path: str = MISSING  # type: ignore
     actor_obs_history_length: int = 1
-    action_scale: float = 0.25
-    obs_dof_vel_scale: float = 1.0
+    action_scale: float = 1.0
+    obs_dof_vel_scale: float = 0.1
     ball_body_name: str = "ball"
+    missing_ball_rel_xy: list[float] = [0.5, 0.0]
     policy_joint_names: list[str] = MISSING  # type: ignore
     enable_safety_fallback: bool = False
 
@@ -208,76 +216,25 @@ class KickPolicyCfg(PolicyCfg):
 class K1KickControllerCfg(ControllerCfg):
     robot = K1_CFG.replace(  # type: ignore
         default_joint_pos=[
-            0,
-            0,
-            0.2,
-            -1.3,
-            0,
-            -0.5,
-            0.2,
-            1.3,
-            0,
-            0.5,
-            -0.2,
-            0,
-            0,
-            0.4,
-            -0.2,
-            0.0,
-            -0.2,
-            0,
-            0,
-            0.4,
-            -0.2,
-            0.0,
+            0, 0,
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+            -0.2, 0, 0, 0.4, -0.25, 0,
+            -0.2, 0, 0, 0.4, -0.25, 0,
         ],
         joint_stiffness=[
-            4.0,
-            4.0,
-            4.0,
-            4.0,
-            4.0,
-            4.0,
-            4.0,
-            4.0,
-            4.0,
-            4.0,
-            80.0,
-            80.0,
-            80.0,
-            80.0,
-            30.0,
-            30.0,
-            80.0,
-            80.0,
-            80.0,
-            80.0,
-            30.0,
-            30.0,
+            10.0, 10.0,
+            10.0, 10.0, 10.0, 10.0, 
+            10.0, 10.0, 10.0, 10.0,
+            80.0, 80.0, 80.0, 80.0, 35.0, 35.0,
+            80.0, 80.0, 80.0, 80.0, 35.0, 35.0,
         ],
         joint_damping=[
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
-            2.0,
+            1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0,
+            4.0, 4.0, 4.0, 4.0, 1.0, 1.0,
+            4.0, 4.0, 4.0, 4.0, 1.0, 1.0,
         ],
     )
 
@@ -288,19 +245,19 @@ class K1KickControllerCfg(ControllerCfg):
     )
 
     policy: KickPolicyCfg = KickPolicyCfg(
-        obs_dof_vel_scale=1.0,
+        obs_dof_vel_scale=0.1,
         policy_joint_names=[
             "Left_Hip_Pitch",
-            "Right_Hip_Pitch",
             "Left_Hip_Roll",
-            "Right_Hip_Roll",
             "Left_Hip_Yaw",
-            "Right_Hip_Yaw",
             "Left_Knee_Pitch",
-            "Right_Knee_Pitch",
             "Left_Ankle_Pitch",
-            "Right_Ankle_Pitch",
             "Left_Ankle_Roll",
+            "Right_Hip_Pitch",
+            "Right_Hip_Roll",
+            "Right_Hip_Yaw",
+            "Right_Knee_Pitch",
+            "Right_Ankle_Pitch",
             "Right_Ankle_Roll",
         ],
     )
