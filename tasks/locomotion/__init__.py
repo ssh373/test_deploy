@@ -2,6 +2,7 @@ from booster_deploy.utils.isaaclab.configclass import configclass
 from booster_deploy.utils.registry import register_task
 from .locomotion import T1WalkControllerCfg
 from .locomotion_k1 import K1WalkControllerCfg
+from .kick_k1 import K1KickControllerCfg
 
 # Register locomotion tasks
 
@@ -20,6 +21,15 @@ class K1WalkControllerCfg1(K1WalkControllerCfg):
         super().__post_init__()
         self.policy.checkpoint_path = "models/k1_walk_002_2026-02-21_00-18-50.pt"
 
+
+@configclass
+class K1KickControllerCfg1(K1KickControllerCfg):
+    '''Deployment walk for K1 robot.'''
+    def __post_init__(self):
+        super().__post_init__()
+        self.policy.checkpoint_path = "models/k1_kick.pt"
+
 register_task(
     "t1_walk", T1WalkControllerCfg1())
 register_task("k1_walk", K1WalkControllerCfg1())
+register_task("k1_kick", K1KickControllerCfg1())
