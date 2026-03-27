@@ -13,6 +13,10 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor, ExternalShutdownException
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from booster_interface.msg import LowState, LowCmd, MotorCmd
+try:
+    from vision_interface.msg import Ball as VisionBall
+except Exception:
+    VisionBall = None
 
 from booster_robotics_sdk_python import (  # type: ignore
     B1LocoClient,
@@ -62,6 +66,19 @@ class BoosterRobotPortal:
         self.cfg = cfg
 
         self.robot = BoosterRobot(cfg.robot)
+        missing_ball_rel_xy = list(
+            getattr(self.cfg.policy, "missing_ball_rel_xy", [0.5, 0.0])
+        )
+        if len(missing_ball_rel_xy) < 2:
+            missing_ball_rel_xy = [0.5, 0.0]
+        self._ball_default_rel_xy = np.array(
+            missing_ball_rel_xy[:2],
+            dtype=np.float32,
+        )
+        self._ball_rel_xy = self._ball_default_rel_xy.copy()
+        self._ball_last_seen_time = 0.0
+        self._ball_valid = False
+        self._ball_timeout_s = 0.3
 
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -133,6 +150,8 @@ class BoosterRobotPortal:
                 ("vx", float),
                 ("vy", float),
                 ("vyaw", float),
+                ("ball_rel_x", float),
+                ("ball_rel_y", float),
             ]
         )
         self.synced_command = SyncedArray(
@@ -183,6 +202,24 @@ class BoosterRobotPortal:
                     history=HistoryPolicy.KEEP_LAST,
                 ),
             )
+            if VisionBall is not None:
+                low_state_node.create_subscription(
+                    VisionBall,
+                    "booster_vision/ball",
+                    self._vision_ball_handler,
+                    QoSProfile(
+                        depth=1,
+                        reliability=ReliabilityPolicy.BEST_EFFORT,
+                        history=HistoryPolicy.KEEP_LAST,
+                    ),
+                )
+                self.logger.info(
+                    "Vision ball subscriber started: topic='booster_vision/ball', msg='vision_interface/msg/Ball'"
+                )
+            else:
+                self.logger.warning(
+                    "vision_interface.msg.Ball import failed. Using default ball relative xy."
+                )
 
             executor = SingleThreadedExecutor()
             executor.add_node(low_state_node)
@@ -217,6 +254,18 @@ class BoosterRobotPortal:
             daemon=True,
         )
         self.low_state_thread.start()
+
+    def _vision_ball_handler(self, ball_msg):
+        try:
+            if not self.is_running or self.exit_event.is_set():
+                return
+            if getattr(ball_msg, "confidence", 0.0) > 0.0:
+                self._ball_rel_xy[0] = float(ball_msg.x)
+                self._ball_rel_xy[1] = float(ball_msg.y)
+                self._ball_last_seen_time = time.perf_counter()
+                self._ball_valid = True
+        except Exception as e:
+            self.logger.error(f"Error in _vision_ball_handler: {e}")
 
     def _low_state_handler(self, low_state_msg: LowState):
         self.metrics["low_state_handler"].mark()
@@ -257,6 +306,13 @@ class BoosterRobotPortal:
             cmd[0]["vx"] = self.remoteControlService.get_vx_cmd()
             cmd[0]["vy"] = self.remoteControlService.get_vy_cmd()
             cmd[0]["vyaw"] = self.remoteControlService.get_vyaw_cmd()
+            now = time.perf_counter()
+            if self._ball_valid and (now - self._ball_last_seen_time) <= self._ball_timeout_s:
+                cmd[0]["ball_rel_x"] = self._ball_rel_xy[0]
+                cmd[0]["ball_rel_y"] = self._ball_rel_xy[1]
+            else:
+                cmd[0]["ball_rel_x"] = self._ball_default_rel_xy[0]
+                cmd[0]["ball_rel_y"] = self._ball_default_rel_xy[1]
             self.synced_command.write(cmd)
 
         except Exception as e:
@@ -519,6 +575,12 @@ class BoosterRobotController(BaseController):
         self.robot.data.root_ang_vel_b = torch.from_numpy(
             state["root_ang_vel_b"]).to(dtype=torch.float32).to(
                 self.robot.data.device)
+        cmd = self.portal.synced_command.read()[0]
+        self.ball_rel_xy = torch.tensor(
+            [cmd["ball_rel_x"], cmd["ball_rel_y"]],
+            dtype=torch.float32,
+            device=self.robot.data.device,
+        )
 
     def ctrl_step(self, dof_targets: torch.Tensor) -> None:
         for i in range(self.robot.num_joints):

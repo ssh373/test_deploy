@@ -79,7 +79,41 @@ class KickPolicy(Policy):
         self._ball_warned = False
 
     def reset(self) -> None:
-        pass
+        if not self.cfg.reset_ball_on_start:
+            return
+        if not (hasattr(self.controller, "mj_model") and hasattr(self.controller, "mj_data")):
+            return
+        try:
+            import mujoco
+
+            joint_id = mujoco.mj_name2id(
+                self.controller.mj_model,  # type: ignore[attr-defined]
+                mujoco.mjtObj.mjOBJ_JOINT,
+                self.cfg.ball_joint_name,
+            )
+            if joint_id < 0:
+                return
+
+            qpos_adr = int(self.controller.mj_model.jnt_qposadr[joint_id])  # type: ignore[attr-defined]
+            qvel_adr = int(self.controller.mj_model.jnt_dofadr[joint_id])  # type: ignore[attr-defined]
+
+            root_pos_w = self.robot.data.root_pos_w
+            root_quat_w = self.robot.data.root_quat_w
+            rel_b = torch.tensor(
+                [self.cfg.ball_spawn_rel_xy[0], self.cfg.ball_spawn_rel_xy[1], 0.0],
+                dtype=torch.float32,
+                device=root_quat_w.device,
+            )
+            rel_w = lab_math.quat_apply(root_quat_w, rel_b)
+            ball_pos_w = (root_pos_w + rel_w).detach().cpu().numpy().astype("float64")
+            ball_pos_w[2] = float(self.cfg.ball_spawn_height)
+
+            self.controller.mj_data.qpos[qpos_adr:qpos_adr + 3] = ball_pos_w  # type: ignore[attr-defined]
+            self.controller.mj_data.qpos[qpos_adr + 3:qpos_adr + 7] = [1.0, 0.0, 0.0, 0.0]  # type: ignore[attr-defined]
+            self.controller.mj_data.qvel[qvel_adr:qvel_adr + 6] = 0.0  # type: ignore[attr-defined]
+            mujoco.mj_forward(self.controller.mj_model, self.controller.mj_data)  # type: ignore[attr-defined]
+        except Exception as e:
+            print(f"Warning: failed to reset ball pose on start: {e}")
 
     def _get_ball_relative_xy(self, base_quat: torch.Tensor) -> torch.Tensor:
         """Return ball relative xy in base frame.
@@ -207,7 +241,11 @@ class KickPolicyCfg(PolicyCfg):
     action_scale: float = 1.0
     obs_dof_vel_scale: float = 0.1
     ball_body_name: str = "ball"
+    ball_joint_name: str = "ball_freejoint"
     missing_ball_rel_xy: list[float] = [0.5, 0.0]
+    reset_ball_on_start: bool = True
+    ball_spawn_rel_xy: list[float] = [0.5, 0.0]
+    ball_spawn_height: float = 0.075
     policy_joint_names: list[str] = MISSING  # type: ignore
     enable_safety_fallback: bool = False
 
@@ -215,6 +253,7 @@ class KickPolicyCfg(PolicyCfg):
 @configclass
 class K1KickControllerCfg(ControllerCfg):
     robot = K1_CFG.replace(  # type: ignore
+        mjcf_path="/home/user/booster_deploy/tasks/locomotion/assets/K1_22dof_kick_ball.xml",
         default_joint_pos=[
             0, 0,
             0, 0, 0, 0,

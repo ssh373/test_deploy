@@ -21,14 +21,17 @@ class MujocoController(BaseController):
         self.decimation = self.cfg.mujoco.decimation
         self.mj_data = mujoco.MjData(self.mj_model)
         mujoco.mj_resetData(self.mj_model, self.mj_data)
+        self._init_index_cache()
 
-        self.mj_data.qpos = np.concatenate(
-            [
-                np.array(self.cfg.mujoco.init_pos, dtype=np.float32),
-                np.array(self.cfg.mujoco.init_quat, dtype=np.float32),
-                self.robot.default_joint_pos.numpy(),
-            ]
+        qpos = self.mj_data.qpos.copy()
+        qpos[self._base_qpos_adr:self._base_qpos_adr + 3] = np.array(
+            self.cfg.mujoco.init_pos, dtype=np.float32
         )
+        qpos[self._base_qpos_adr + 3:self._base_qpos_adr + 7] = np.array(
+            self.cfg.mujoco.init_quat, dtype=np.float32
+        )
+        qpos[self._joint_qpos_adrs] = self.robot.default_joint_pos.numpy()
+        self.mj_data.qpos[:] = qpos
         mujoco.mj_forward(self.mj_model, self.mj_data)
 
         # render a second "ghost" robot (kinematic only) without
@@ -47,6 +50,34 @@ class MujocoController(BaseController):
 
         # Reference qpos can be set explicitly by the policy.
         self._reference_qpos: np.ndarray | None = None
+
+    def _init_index_cache(self) -> None:
+        world_joint_id = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, "world_joint"
+        )
+        if world_joint_id < 0:
+            raise ValueError("MuJoCo model must contain free joint named 'world_joint'.")
+        self._base_qpos_adr = int(self.mj_model.jnt_qposadr[world_joint_id])
+        self._base_qvel_adr = int(self.mj_model.jnt_dofadr[world_joint_id])
+
+        self._joint_qpos_adrs: list[int] = []
+        self._joint_dof_adrs: list[int] = []
+        self._actuator_ids: list[int] = []
+        for joint_name in self.robot.cfg.joint_names:
+            joint_id = mujoco.mj_name2id(
+                self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+            if joint_id < 0:
+                raise ValueError(f"Joint '{joint_name}' not found in MJCF.")
+            self._joint_qpos_adrs.append(int(self.mj_model.jnt_qposadr[joint_id]))
+            self._joint_dof_adrs.append(int(self.mj_model.jnt_dofadr[joint_id]))
+
+            actuator_id = mujoco.mj_name2id(
+                self.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, joint_name
+            )
+            if actuator_id < 0:
+                raise ValueError(f"Actuator '{joint_name}' not found in MJCF.")
+            self._actuator_ids.append(int(actuator_id))
 
     def start(self):
         # Clear reference; policy.reset() may set a fresh one.
@@ -136,14 +167,22 @@ class MujocoController(BaseController):
                 )
 
     def update_state(self) -> None:
-        dof_pos = self.mj_data.qpos.astype(np.float32)[7:]
-        dof_vel = self.mj_data.qvel.astype(np.float32)[6:]
-        dof_torque = self.mj_data.qfrc_actuator[6:].astype(np.float32)
+        dof_pos = self.mj_data.qpos[self._joint_qpos_adrs].astype(np.float32)
+        dof_vel = self.mj_data.qvel[self._joint_dof_adrs].astype(np.float32)
+        dof_torque = self.mj_data.qfrc_actuator[self._joint_dof_adrs].astype(np.float32)
 
-        base_pos_w = self.mj_data.qpos.astype(np.float32)[:3]
-        base_quat = self.mj_data.qpos.astype(np.float32)[3:7]
-        base_lin_vel_b = self.mj_data.qvel.astype(np.float32)[:3]
-        base_ang_vel_b = self.mj_data.qvel.astype(np.float32)[3:6]
+        base_pos_w = self.mj_data.qpos[
+            self._base_qpos_adr:self._base_qpos_adr + 3
+        ].astype(np.float32)
+        base_quat = self.mj_data.qpos[
+            self._base_qpos_adr + 3:self._base_qpos_adr + 7
+        ].astype(np.float32)
+        base_lin_vel_b = self.mj_data.qvel[
+            self._base_qvel_adr:self._base_qvel_adr + 3
+        ].astype(np.float32)
+        base_ang_vel_b = self.mj_data.qvel[
+            self._base_qvel_adr + 3:self._base_qvel_adr + 6
+        ].astype(np.float32)
 
         self.robot.data.joint_pos = torch.from_numpy(
             dof_pos).to(self.robot.data.device)
@@ -173,13 +212,21 @@ class MujocoController(BaseController):
                     'joint_torque': [],
                     'dof_targets': [],
                 }
-            base_pos_w = self.mj_data.qpos.astype(np.float32)[:3]
-            base_quat = self.mj_data.qpos.astype(np.float32)[3:7]
-            base_lin_vel_b = self.mj_data.qvel.astype(np.float32)[:3]
-            base_ang_vel_b = self.mj_data.qvel.astype(np.float32)[3:6]
-            dof_pos = self.mj_data.qpos.astype(np.float32)[7:]
-            dof_vel = self.mj_data.qvel.astype(np.float32)[6:]
-            dof_torque = self.mj_data.qfrc_actuator[6:].astype(np.float32)
+            base_pos_w = self.mj_data.qpos[
+                self._base_qpos_adr:self._base_qpos_adr + 3
+            ].astype(np.float32)
+            base_quat = self.mj_data.qpos[
+                self._base_qpos_adr + 3:self._base_qpos_adr + 7
+            ].astype(np.float32)
+            base_lin_vel_b = self.mj_data.qvel[
+                self._base_qvel_adr:self._base_qvel_adr + 3
+            ].astype(np.float32)
+            base_ang_vel_b = self.mj_data.qvel[
+                self._base_qvel_adr + 3:self._base_qvel_adr + 6
+            ].astype(np.float32)
+            dof_pos = self.mj_data.qpos[self._joint_qpos_adrs].astype(np.float32)
+            dof_vel = self.mj_data.qvel[self._joint_dof_adrs].astype(np.float32)
+            dof_torque = self.mj_data.qfrc_actuator[self._joint_dof_adrs].astype(np.float32)
 
             self._states['root_pos_w'].append(base_pos_w)
             self._states['root_quat_w'].append(base_quat)
@@ -201,8 +248,8 @@ class MujocoController(BaseController):
         if self.vel_command is not None:
             self.update_vel_command()
 
-        dof_pos = self.mj_data.qpos.astype(np.float32)[7:]
-        dof_vel = self.mj_data.qvel.astype(np.float32)[6:]
+        dof_pos = self.mj_data.qpos[self._joint_qpos_adrs].astype(np.float32)
+        dof_vel = self.mj_data.qvel[self._joint_dof_adrs].astype(np.float32)
         kp = self.robot.joint_stiffness.numpy()
         kd = self.robot.joint_damping.numpy()
         # ctrl_limit = [
@@ -213,14 +260,17 @@ class MujocoController(BaseController):
         # ]
         ctrl_limit = self.robot.effort_limit.numpy()
         for i in range(self.decimation):
-            self.mj_data.ctrl = np.clip(
+            tau_cmd = np.clip(
                 kp * (dof_targets - dof_pos) - kd * dof_vel,
                 -ctrl_limit,
                 ctrl_limit,
             )
+            ctrl = self.mj_data.ctrl.copy()
+            ctrl[self._actuator_ids] = tau_cmd
+            self.mj_data.ctrl[:] = ctrl
             mujoco.mj_step(self.mj_model, self.mj_data)
-            dof_pos = self.mj_data.qpos.astype(np.float32)[7:]
-            dof_vel = self.mj_data.qvel.astype(np.float32)[6:]
+            dof_pos = self.mj_data.qpos[self._joint_qpos_adrs].astype(np.float32)
+            dof_vel = self.mj_data.qvel[self._joint_dof_adrs].astype(np.float32)
 
     def run(self):
         with mujoco.viewer.launch_passive(
@@ -245,5 +295,7 @@ class MujocoController(BaseController):
                         rgba=self._ghost_rgba,
                     )
 
-                self.viewer.cam.lookat[:] = self.mj_data.qpos.astype(np.float32)[0:3]
+                self.viewer.cam.lookat[:] = self.mj_data.qpos[
+                    self._base_qpos_adr:self._base_qpos_adr + 3
+                ].astype(np.float32)
                 self.viewer.sync()
