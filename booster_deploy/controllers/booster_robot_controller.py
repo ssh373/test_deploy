@@ -89,7 +89,7 @@ class BoosterRobotPortal:
         self._head_cmd_yaw = 0.0
         self._head_cmd_last_seen_time = 0.0
         self._head_cmd_valid = False
-        self._head_cmd_timeout_s = 0.8
+        self._head_cmd_timeout_s = 2.0
 
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -296,6 +296,10 @@ class BoosterRobotPortal:
     def _loco_api_req_handler(self, rpc_req_msg):
         try:
             if not self.is_running or self.exit_event.is_set():
+                return
+            header = json.loads(getattr(rpc_req_msg, "header", "") or "{}")
+            # Only accept explicit RotateHead RPC.
+            if int(header.get("api_id", -1)) != 2004:
                 return
             body = json.loads(getattr(rpc_req_msg, "body", "") or "{}")
             # moveHead RPC body contains pitch/yaw.
@@ -597,6 +601,9 @@ class BoosterRobotController(BaseController):
         self.head_cmd_pitch = 0.0
         self.head_cmd_yaw = 0.0
         self.head_cmd_active = False
+        self.head_hold_last_target = True
+        self._last_head_pitch_cmd = 0.0
+        self._last_head_yaw_cmd = 0.0
 
     def update_vel_command(self):
         cmd = self.portal.synced_command.read()[0]
@@ -657,11 +664,17 @@ class BoosterRobotController(BaseController):
             yaw_cmd = math.atan2(y, x)
             pitch_cmd = math.atan2(self.head_track_height_m, dist)
         if yaw_cmd is None or pitch_cmd is None:
-            return
+            if self.head_hold_last_target:
+                yaw_cmd = self._last_head_yaw_cmd
+                pitch_cmd = self._last_head_pitch_cmd
+            else:
+                return
         yaw_cmd = max(float(self.head_yaw_limit[0]), min(float(self.head_yaw_limit[1]), yaw_cmd))
         pitch_cmd = max(float(self.head_pitch_limit[0]), min(float(self.head_pitch_limit[1]), pitch_cmd))
         dof_targets[self.head_track_yaw_idx] = yaw_cmd
         dof_targets[self.head_track_pitch_idx] = pitch_cmd
+        self._last_head_yaw_cmd = yaw_cmd
+        self._last_head_pitch_cmd = pitch_cmd
 
     def ctrl_step(self, dof_targets: torch.Tensor) -> None:
         self._apply_internal_head_targets(dof_targets)
