@@ -44,9 +44,9 @@ class KickPolicy(Policy):
             dtype=torch.long,
         )
 
+        # Keep only arms fixed. Head joints are intentionally excluded so
+        # external trackers (e.g. track-ball) can command neck motion.
         self.upper_joint_names = [
-            "AAHead_yaw",
-            "Head_pitch",
             "ALeft_Shoulder_Pitch",
             "Left_Shoulder_Roll",
             "Left_Elbow_Pitch",
@@ -62,8 +62,6 @@ class KickPolicy(Policy):
         )
         self.fixed_upper_body_pos = torch.tensor(
             [
-                0.0,
-                0.0,
                 0.0,
                 -1.35,
                 0.0,
@@ -229,6 +227,11 @@ class KickPolicy(Policy):
         dof_targets[self.real2sim_joint_map] = (
             self.robot.default_joint_pos[self.real2sim_joint_map] + mapped_action
         )
+        if self.cfg.freeze_lower_body:
+            # Temporary test mode: keep policy-controlled lower-body joints fixed.
+            dof_targets[self.real2sim_joint_map] = self.robot.default_joint_pos[
+                self.real2sim_joint_map
+            ]
         dof_targets[self.upper_idx] = self.fixed_upper_body_pos
         return dof_targets
 
@@ -246,6 +249,7 @@ class KickPolicyCfg(PolicyCfg):
     reset_ball_on_start: bool = True
     ball_spawn_rel_xy: list[float] = [0.5, 0.0]
     ball_spawn_height: float = 0.075
+    freeze_lower_body: bool = True
     policy_joint_names: list[str] = MISSING  # type: ignore
     enable_safety_fallback: bool = False
 
