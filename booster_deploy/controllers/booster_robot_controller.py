@@ -583,10 +583,17 @@ class BoosterRobotController(BaseController):
         )
 
     def ctrl_step(self, dof_targets: torch.Tensor) -> None:
+        pass_through_idx = getattr(self, "pass_through_joint_idx", [])
         for i in range(self.robot.num_joints):
-            self.portal.motor_cmd[i].q = float(dof_targets[i].item())
-            kp_val = float(self.robot.joint_stiffness[i].item())
-            kd_val = float(self.robot.joint_damping[i].item())
+            if i in pass_through_idx:
+                # Do not fight external controllers (e.g. movehead).
+                self.portal.motor_cmd[i].q = float(self.robot.data.joint_pos[i].item())
+                kp_val = 0.0
+                kd_val = 0.0
+            else:
+                self.portal.motor_cmd[i].q = float(dof_targets[i].item())
+                kp_val = float(self.robot.joint_stiffness[i].item())
+                kd_val = float(self.robot.joint_damping[i].item())
             self.portal.motor_cmd[i].kp = kp_val
             self.portal.motor_cmd[i].kd = kd_val
         self.portal.low_cmd_publisher.publish(self.portal.low_cmd)

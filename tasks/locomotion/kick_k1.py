@@ -43,6 +43,11 @@ class KickPolicy(Policy):
             [self.robot.cfg.joint_names.index(name) for name in self.cfg.policy_joint_names],
             dtype=torch.long,
         )
+        self.head_joint_names = ["AAHead_yaw", "Head_pitch"]
+        self.head_idx = torch.tensor(
+            [self.robot.cfg.joint_names.index(name) for name in self.head_joint_names],
+            dtype=torch.long,
+        )
 
         # Keep only arms fixed. Head joints are intentionally excluded so
         # external trackers (e.g. track-ball) can command neck motion.
@@ -77,6 +82,8 @@ class KickPolicy(Policy):
         self._ball_warned = False
 
     def reset(self) -> None:
+        if self.cfg.pass_through_head_from_state:
+            self.controller.pass_through_joint_idx = self.head_idx.tolist()
         if not self.cfg.reset_ball_on_start:
             return
         if not (hasattr(self.controller, "mj_model") and hasattr(self.controller, "mj_data")):
@@ -232,6 +239,8 @@ class KickPolicy(Policy):
             dof_targets[self.real2sim_joint_map] = self.robot.default_joint_pos[
                 self.real2sim_joint_map
             ]
+        if self.cfg.pass_through_head_from_state:
+            dof_targets[self.head_idx] = self.robot.data.joint_pos[self.head_idx]
         dof_targets[self.upper_idx] = self.fixed_upper_body_pos
         return dof_targets
 
@@ -250,6 +259,7 @@ class KickPolicyCfg(PolicyCfg):
     ball_spawn_rel_xy: list[float] = [0.5, 0.0]
     ball_spawn_height: float = 0.075
     freeze_lower_body: bool = True
+    pass_through_head_from_state: bool = True
     policy_joint_names: list[str] = MISSING  # type: ignore
     enable_safety_fallback: bool = False
 
