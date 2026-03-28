@@ -1,5 +1,7 @@
 from __future__ import annotations
 import logging
+import json
+import math
 import signal
 import time
 import threading
@@ -13,6 +15,10 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor, ExternalShutdownException
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from booster_interface.msg import LowState, LowCmd, MotorCmd
+try:
+    from booster_msgs.msg import RpcReqMsg
+except Exception:
+    RpcReqMsg = None
 try:
     from vision_interface.msg import Ball as VisionBall
 except Exception:
@@ -79,6 +85,11 @@ class BoosterRobotPortal:
         self._ball_last_seen_time = 0.0
         self._ball_valid = False
         self._ball_timeout_s = 0.3
+        self._head_cmd_pitch = 0.0
+        self._head_cmd_yaw = 0.0
+        self._head_cmd_last_seen_time = 0.0
+        self._head_cmd_valid = False
+        self._head_cmd_timeout_s = 0.8
 
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -152,6 +163,9 @@ class BoosterRobotPortal:
                 ("vyaw", float),
                 ("ball_rel_x", float),
                 ("ball_rel_y", float),
+                ("head_pitch_cmd", float),
+                ("head_yaw_cmd", float),
+                ("head_cmd_active", float),
             ]
         )
         self.synced_command = SyncedArray(
@@ -220,6 +234,18 @@ class BoosterRobotPortal:
                 self.logger.warning(
                     "vision_interface.msg.Ball import failed. Using default ball relative xy."
                 )
+            if RpcReqMsg is not None:
+                low_state_node.create_subscription(
+                    RpcReqMsg,
+                    "LocoApiTopicReq",
+                    self._loco_api_req_handler,
+                    QoSProfile(
+                        depth=10,
+                        reliability=ReliabilityPolicy.BEST_EFFORT,
+                        history=HistoryPolicy.KEEP_LAST,
+                    ),
+                )
+                self.logger.info("Subscribed to LocoApiTopicReq for moveHead integration.")
 
             executor = SingleThreadedExecutor()
             executor.add_node(low_state_node)
@@ -267,6 +293,21 @@ class BoosterRobotPortal:
         except Exception as e:
             self.logger.error(f"Error in _vision_ball_handler: {e}")
 
+    def _loco_api_req_handler(self, rpc_req_msg):
+        try:
+            if not self.is_running or self.exit_event.is_set():
+                return
+            body = json.loads(getattr(rpc_req_msg, "body", "") or "{}")
+            # moveHead RPC body contains pitch/yaw.
+            if "pitch" in body and "yaw" in body:
+                self._head_cmd_pitch = float(body["pitch"])
+                self._head_cmd_yaw = float(body["yaw"])
+                self._head_cmd_last_seen_time = time.perf_counter()
+                self._head_cmd_valid = True
+        except Exception:
+            # Ignore unrelated RPC payloads.
+            pass
+
     def _low_state_handler(self, low_state_msg: LowState):
         self.metrics["low_state_handler"].mark()
         try:
@@ -313,6 +354,14 @@ class BoosterRobotPortal:
             else:
                 cmd[0]["ball_rel_x"] = self._ball_default_rel_xy[0]
                 cmd[0]["ball_rel_y"] = self._ball_default_rel_xy[1]
+            if self._head_cmd_valid and (now - self._head_cmd_last_seen_time) <= self._head_cmd_timeout_s:
+                cmd[0]["head_pitch_cmd"] = self._head_cmd_pitch
+                cmd[0]["head_yaw_cmd"] = self._head_cmd_yaw
+                cmd[0]["head_cmd_active"] = 1.0
+            else:
+                cmd[0]["head_pitch_cmd"] = 0.0
+                cmd[0]["head_yaw_cmd"] = 0.0
+                cmd[0]["head_cmd_active"] = 0.0
             self.synced_command.write(cmd)
 
         except Exception as e:
@@ -538,6 +587,16 @@ class BoosterRobotController(BaseController):
     def __init__(self, cfg: ControllerCfg, portal: BoosterRobotPortal) -> None:
         super().__init__(cfg)
         self.portal = portal
+        self.head_track_from_ball = False
+        self.head_track_from_loco_api = True
+        self.head_track_yaw_idx = 0
+        self.head_track_pitch_idx = 1
+        self.head_yaw_limit = [-1.0, 1.0]
+        self.head_pitch_limit = [-0.35, 0.86]
+        self.head_track_height_m = 0.55
+        self.head_cmd_pitch = 0.0
+        self.head_cmd_yaw = 0.0
+        self.head_cmd_active = False
 
     def update_vel_command(self):
         cmd = self.portal.synced_command.read()[0]
@@ -581,8 +640,31 @@ class BoosterRobotController(BaseController):
             dtype=torch.float32,
             device=self.robot.data.device,
         )
+        self.head_cmd_pitch = float(cmd["head_pitch_cmd"])
+        self.head_cmd_yaw = float(cmd["head_yaw_cmd"])
+        self.head_cmd_active = bool(cmd["head_cmd_active"] > 0.5)
+
+    def _apply_internal_head_targets(self, dof_targets: torch.Tensor) -> None:
+        yaw_cmd = None
+        pitch_cmd = None
+        if self.head_track_from_loco_api and self.head_cmd_active:
+            pitch_cmd = self.head_cmd_pitch
+            yaw_cmd = self.head_cmd_yaw
+        elif self.head_track_from_ball and hasattr(self, "ball_rel_xy"):
+            x = float(self.ball_rel_xy[0].item())
+            y = float(self.ball_rel_xy[1].item())
+            dist = max(0.05, math.hypot(x, y))
+            yaw_cmd = math.atan2(y, x)
+            pitch_cmd = math.atan2(self.head_track_height_m, dist)
+        if yaw_cmd is None or pitch_cmd is None:
+            return
+        yaw_cmd = max(float(self.head_yaw_limit[0]), min(float(self.head_yaw_limit[1]), yaw_cmd))
+        pitch_cmd = max(float(self.head_pitch_limit[0]), min(float(self.head_pitch_limit[1]), pitch_cmd))
+        dof_targets[self.head_track_yaw_idx] = yaw_cmd
+        dof_targets[self.head_track_pitch_idx] = pitch_cmd
 
     def ctrl_step(self, dof_targets: torch.Tensor) -> None:
+        self._apply_internal_head_targets(dof_targets)
         pass_through_idx = getattr(self, "pass_through_joint_idx", [])
         for i in range(self.robot.num_joints):
             if i in pass_through_idx:

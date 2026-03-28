@@ -82,8 +82,14 @@ class KickPolicy(Policy):
         self._ball_warned = False
 
     def reset(self) -> None:
-        if self.cfg.pass_through_head_from_state:
-            self.controller.pass_through_joint_idx = self.head_idx.tolist()
+        self.controller.pass_through_joint_idx = []
+        self.controller.head_track_from_loco_api = self.cfg.head_track_from_loco_api
+        self.controller.head_track_from_ball = self.cfg.head_track_from_ball
+        self.controller.head_track_yaw_idx = int(self.head_idx[0].item())
+        self.controller.head_track_pitch_idx = int(self.head_idx[1].item())
+        self.controller.head_yaw_limit = self.cfg.head_yaw_limit
+        self.controller.head_pitch_limit = self.cfg.head_pitch_limit
+        self.controller.head_track_height_m = self.cfg.head_track_height_m
         if not self.cfg.reset_ball_on_start:
             return
         if not (hasattr(self.controller, "mj_model") and hasattr(self.controller, "mj_data")):
@@ -239,8 +245,6 @@ class KickPolicy(Policy):
             dof_targets[self.real2sim_joint_map] = self.robot.default_joint_pos[
                 self.real2sim_joint_map
             ]
-        if self.cfg.pass_through_head_from_state:
-            dof_targets[self.head_idx] = self.robot.data.joint_pos[self.head_idx]
         dof_targets[self.upper_idx] = self.fixed_upper_body_pos
         return dof_targets
 
@@ -259,7 +263,11 @@ class KickPolicyCfg(PolicyCfg):
     ball_spawn_rel_xy: list[float] = [0.5, 0.0]
     ball_spawn_height: float = 0.075
     freeze_lower_body: bool = True
-    pass_through_head_from_state: bool = True
+    head_track_from_loco_api: bool = True
+    head_track_from_ball: bool = False
+    head_yaw_limit: list[float] = [-1.0, 1.0]
+    head_pitch_limit: list[float] = [-0.35, 0.86]
+    head_track_height_m: float = 0.55
     policy_joint_names: list[str] = MISSING  # type: ignore
     enable_safety_fallback: bool = False
 
