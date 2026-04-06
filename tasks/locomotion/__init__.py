@@ -3,6 +3,7 @@ from booster_deploy.utils.registry import register_task
 from .locomotion import T1WalkControllerCfg
 from .locomotion_k1 import K1WalkControllerCfg
 from .kick_k1 import K1KickControllerCfg
+from .standup_k1 import K1StandupControllerCfg
 
 # Register locomotion tasks
 
@@ -29,7 +30,16 @@ class K1KickControllerCfg1(K1KickControllerCfg):
         super().__post_init__()
         self.policy.checkpoint_path = "models/k1_kick.pt"
 
+
+@configclass
+class K1StandupControllerCfg1(K1StandupControllerCfg):
+    '''Stand-up policy for K1 robot.'''
+    def __post_init__(self):
+        super().__post_init__()
+        self.policy.checkpoint_path = "models/k1_stand_up.pt"
+
 register_task(
     "t1_walk", T1WalkControllerCfg1())
 register_task("k1_walk", K1WalkControllerCfg1())
 register_task("k1_kick", K1KickControllerCfg1())
+register_task("k1_standup", K1StandupControllerCfg1())
