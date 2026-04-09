@@ -262,7 +262,7 @@ class KickPolicyCfg(PolicyCfg):
     reset_ball_on_start: bool = True
     ball_spawn_rel_xy: list[float] = [0.5, 0.0]
     ball_spawn_height: float = 0.075
-    freeze_lower_body: bool = False
+    freeze_lower_body: bool = True
     head_track_from_loco_api: bool = True
     head_track_from_ball: bool = False
     head_yaw_limit: list[float] = [-1.0, 1.0]

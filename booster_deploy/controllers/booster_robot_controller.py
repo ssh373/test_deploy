@@ -219,7 +219,8 @@ class BoosterRobotPortal:
             if VisionBall is not None:
                 low_state_node.create_subscription(
                     VisionBall,
-                    "booster_vision/ball",
+                    # "booster_vision/ball",
+                    "brain/ball_memory",
                     self._vision_ball_handler,
                     QoSProfile(
                         depth=1,
