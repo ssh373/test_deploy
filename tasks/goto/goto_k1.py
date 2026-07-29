@@ -310,6 +310,10 @@ class K1GoToPolicy(Policy):
             action = action.reshape(-1)
         if action.numel() != len(self.cfg.policy_joint_names):
             raise RuntimeError(f"Expected 12 actions, got {action.numel()}")
+        if not torch.isfinite(action).all():
+            print("Non-finite GoTo action detected; stopping the controller.", flush=True)
+            self.controller.stop()
+            return self.default_joint_pos.clone()
         if self.controller._step_count % 25 == 0:
             x, y, yaw = self._last_pose_xyyaw
             odom_age = (
@@ -325,14 +329,16 @@ class K1GoToPolicy(Policy):
                 "raw_action=", action.detach().cpu().numpy(),
                 flush=True,
             )
-        # GoTo training uses RSL-RL's default (no action clipping). Clipping
-        # only in deployment destroys the relative magnitudes of large,
-        # coordinated leg actions.
+        # Keep deployment consistent with the training wrapper's action clip.
         if self.cfg.clip_actions is not None:
             action = torch.clamp(action, -self.cfg.clip_actions, self.cfg.clip_actions)
         self.last_action.copy_(action)
         targets = self.default_joint_pos.clone()
         targets[self.policy_joint_idx] += action * self.action_scale
+        if not torch.isfinite(targets).all():
+            print("Non-finite GoTo joint target detected; stopping the controller.", flush=True)
+            self.controller.stop()
+            return self.default_joint_pos.clone()
         return targets
 
 
@@ -343,7 +349,7 @@ class K1GoToPolicyCfg(PolicyCfg):
     # ang_vel(3) + gravity(3) + joint_pos(12) + joint_vel(12)
     # + previous_action(12) + goal(4)
     obs_dim: int = 46
-    clip_actions: float | None = None
+    clip_actions: float | None = 1.0
     enable_safety_fallback: bool = True
     policy_joint_names: list[str] = POLICY_JOINT_NAMES
     default_goal: tuple[float, float, float] = (0.0, 0.0, 0.0)
