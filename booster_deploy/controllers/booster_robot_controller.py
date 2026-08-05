@@ -84,7 +84,11 @@ class BoosterRobotPortal:
         self._ball_rel_xy = self._ball_default_rel_xy.copy()
         self._ball_last_seen_time = 0.0
         self._ball_valid = False
-        self._ball_timeout_s = 0.3
+        self._ball_confidence = 0.0
+        self._ball_timeout_s = float(getattr(self.cfg.policy, "ball_timeout_s", 0.3))
+        self._ball_confidence_threshold = float(
+            getattr(self.cfg.policy, "ball_confidence_threshold", 0.4)
+        )
         self._head_cmd_pitch = 0.0
         self._head_cmd_yaw = 0.0
         self._head_cmd_last_seen_time = 0.0
@@ -163,6 +167,9 @@ class BoosterRobotPortal:
                 ("vyaw", float),
                 ("ball_rel_x", float),
                 ("ball_rel_y", float),
+                ("ball_visible", float),
+                ("ball_age", float),
+                ("ball_confidence", float),
                 ("head_pitch_cmd", float),
                 ("head_yaw_cmd", float),
                 ("head_cmd_active", float),
@@ -219,8 +226,7 @@ class BoosterRobotPortal:
             if VisionBall is not None:
                 low_state_node.create_subscription(
                     VisionBall,
-                    # "booster_vision/ball",
-                    "brain/ball_memory",
+                    "/booster_vision/ball",
                     self._vision_ball_handler,
                     QoSProfile(
                         depth=1,
@@ -286,10 +292,12 @@ class BoosterRobotPortal:
         try:
             if not self.is_running or self.exit_event.is_set():
                 return
-            if getattr(ball_msg, "confidence", 0.0) > 0.0:
+            confidence = float(getattr(ball_msg, "confidence", 0.0))
+            if confidence >= self._ball_confidence_threshold:
                 self._ball_rel_xy[0] = float(ball_msg.x)
                 self._ball_rel_xy[1] = float(ball_msg.y)
                 self._ball_last_seen_time = time.perf_counter()
+                self._ball_confidence = confidence
                 self._ball_valid = True
         except Exception as e:
             self.logger.error(f"Error in _vision_ball_handler: {e}")
@@ -353,12 +361,21 @@ class BoosterRobotPortal:
             cmd[0]["vy"] = self.remoteControlService.get_vy_cmd()
             cmd[0]["vyaw"] = self.remoteControlService.get_vyaw_cmd()
             now = time.perf_counter()
-            if self._ball_valid and (now - self._ball_last_seen_time) <= self._ball_timeout_s:
+            ball_age = now - self._ball_last_seen_time if self._ball_valid else float("inf")
+            if self._ball_valid and ball_age <= self._ball_timeout_s:
                 cmd[0]["ball_rel_x"] = self._ball_rel_xy[0]
                 cmd[0]["ball_rel_y"] = self._ball_rel_xy[1]
+                cmd[0]["ball_visible"] = 1.0
+                cmd[0]["ball_age"] = ball_age
+                cmd[0]["ball_confidence"] = self._ball_confidence
             else:
-                cmd[0]["ball_rel_x"] = self._ball_default_rel_xy[0]
-                cmd[0]["ball_rel_y"] = self._ball_default_rel_xy[1]
+                # Keep the last coordinate for continuity, but mark it stale so
+                # the policy can stop safely instead of kicking a phantom ball.
+                cmd[0]["ball_rel_x"] = self._ball_rel_xy[0]
+                cmd[0]["ball_rel_y"] = self._ball_rel_xy[1]
+                cmd[0]["ball_visible"] = 0.0
+                cmd[0]["ball_age"] = min(ball_age, 10.0)
+                cmd[0]["ball_confidence"] = 0.0
             if self._head_cmd_valid and (now - self._head_cmd_last_seen_time) <= self._head_cmd_timeout_s:
                 cmd[0]["head_pitch_cmd"] = self._head_cmd_pitch
                 cmd[0]["head_yaw_cmd"] = self._head_cmd_yaw
@@ -648,6 +665,9 @@ class BoosterRobotController(BaseController):
             dtype=torch.float32,
             device=self.robot.data.device,
         )
+        self.ball_visible = float(cmd["ball_visible"])
+        self.ball_age = float(cmd["ball_age"])
+        self.ball_confidence = float(cmd["ball_confidence"])
         self.head_cmd_pitch = float(cmd["head_pitch_cmd"])
         self.head_cmd_yaw = float(cmd["head_yaw_cmd"])
         self.head_cmd_active = bool(cmd["head_cmd_active"] > 0.5)

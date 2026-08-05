@@ -23,6 +23,14 @@ class MujocoController(BaseController):
         mujoco.mj_resetData(self.mj_model, self.mj_data)
         self._init_index_cache()
 
+        # RobotCfg is the deployment contract. Keep MuJoCo's actuator-level
+        # clamp synchronized with it instead of silently inheriting stale
+        # forcerange values from the shared MJCF.
+        effort_limit = self.robot.effort_limit.numpy()
+        self.mj_model.actuator_forcelimited[self._actuator_ids] = 1
+        self.mj_model.actuator_forcerange[self._actuator_ids, 0] = -effort_limit
+        self.mj_model.actuator_forcerange[self._actuator_ids, 1] = effort_limit
+
         qpos = self.mj_data.qpos.copy()
         qpos[self._base_qpos_adr:self._base_qpos_adr + 3] = np.array(
             self.cfg.mujoco.init_pos, dtype=np.float32

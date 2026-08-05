@@ -35,24 +35,24 @@ POLICY_JOINT_NAMES = [
 
 DEFAULT_JOINT_POS = [
     0.0, 0.0,
-    0.2, -1.3, 0.0, -0.5,
-    0.2, 1.3, 0.0, 0.5,
+    0.0, -1.35, 0.0, 0.0,
+    0.0, 1.35, 0.0, 0.0,
     -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,
     -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,
 ]
 
 # Training fixes the 10 head/arm joints. MuJoCo models them as hinges, so use
-# the robot's prepare gains to approximate that fixed zero pose.
+# the robot's prepare gains to hold the corresponding URDF fixed-joint pose.
 JOINT_STIFFNESS = [
     40.0, 40.0,
     40.0, 50.0, 20.0, 20.0,
     40.0, 50.0, 20.0, 20.0,
-] + [100.0] * 4 + [50.0] * 2 + [100.0] * 4 + [50.0] * 2
+] + [80.0] * 4 + [30.0] * 2 + [80.0] * 4 + [30.0] * 2
 JOINT_DAMPING = [
     1.5, 1.5,
     0.5, 1.5, 0.2, 0.2,
     0.5, 1.5, 0.2, 0.2,
-] + [2.0] * 4 + [1.0] * 2 + [2.0] * 4 + [1.0] * 2
+] + [2.0] * 6 + [2.0] * 6
 EFFORT_LIMIT = [
     6.0, 6.0,
     14.0, 14.0, 14.0, 14.0,
@@ -93,7 +93,7 @@ class K1GoToPolicy(Policy):
             self._model: torch.jit.ScriptModule = torch.jit.load(path, map_location=self.device)
         except Exception as exc:
             raise RuntimeError(
-                f"Failed to load recurrent TorchScript policy: {path}\n"
+                f"Failed to load TorchScript policy: {path}\n"
                 "Export it with train/scripts/rsl_rl/play.py and copy policy.pt here."
             ) from exc
         self._model.to(self.device).eval()
@@ -291,11 +291,13 @@ class K1GoToPolicy(Policy):
         idx = self.policy_joint_idx
         goal_command = self._goal_command()
         self._last_goal_command.copy_(goal_command.detach())
+        joint_pos_rel = self.robot.data.joint_pos[idx] - self.default_joint_pos[idx]
+        joint_vel_scaled = self.robot.data.joint_vel[idx] * 0.05
         obs = torch.cat((
             self.robot.data.root_ang_vel_b * 0.25,
             projected_gravity,
-            self.robot.data.joint_pos[idx] - self.default_joint_pos[idx],
-            self.robot.data.joint_vel[idx] * 0.05,
+            joint_pos_rel,
+            joint_vel_scaled,
             self.last_action,
             goal_command,
         ))
@@ -314,21 +316,6 @@ class K1GoToPolicy(Policy):
             print("Non-finite GoTo action detected; stopping the controller.", flush=True)
             self.controller.stop()
             return self.default_joint_pos.clone()
-        if self.controller._step_count % 25 == 0:
-            x, y, yaw = self._last_pose_xyyaw
-            odom_age = (
-                time.monotonic() - self._odom_received_at
-                if self._use_robot_odometry and self._odom_received_at > 0.0
-                else 0.0
-            )
-            print(
-                f"raw_odom=({x:.6f}, {y:.6f}, {yaw:.6f})",
-                f"odom_rx={self._odom_receive_count}",
-                f"odom_age={odom_age:.3f}s",
-                "remaining_goal=", self._last_goal_command.cpu().numpy(),
-                "raw_action=", action.detach().cpu().numpy(),
-                flush=True,
-            )
         # Keep deployment consistent with the training wrapper's action clip.
         if self.cfg.clip_actions is not None:
             action = torch.clamp(action, -self.cfg.clip_actions, self.cfg.clip_actions)
@@ -359,8 +346,9 @@ class K1GoToPolicyCfg(PolicyCfg):
     odometry_startup_timeout_s: float = 3.0
     # 0.25 * effort_limit / stiffness, in POLICY_JOINT_NAMES order.
     action_scale: tuple[float, ...] = (
-        0.17, 0.17, 0.19, 0.19, 0.09575, 0.09575,
-        0.28, 0.28, 0.1915, 0.1915, 0.1915, 0.1915,
+        0.2125, 0.2125, 0.2375, 0.2375, 0.1196875, 0.1196875,
+        0.35, 0.35, 0.31916666666666665, 0.31916666666666665,
+        0.31916666666666665, 0.31916666666666665,
     )
 
 
