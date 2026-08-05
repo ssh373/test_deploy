@@ -318,6 +318,9 @@ class K1IsaacLabKickPolicyCfg(PolicyCfg):
 class K1IsaacLabKickControllerCfg(ControllerCfg):
     policy_dt: float = 0.02
     head_control_from_loco_api: bool = True
+    fall_protection_enabled: bool = True
+    fall_roll_pitch_threshold_rad: float = math.radians(30.0)
+    fall_trigger_duration_s: float = 0.10
     robot = K1_CFG.replace(
         mjcf_path=_MJCF_PATH,
         default_joint_pos=DEFAULT_JOINT_POS,

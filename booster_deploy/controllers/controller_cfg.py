@@ -96,6 +96,12 @@ class ControllerCfg:
     # is needed in custom mode, where the locomotion API no longer moves them.
     head_control_from_loco_api: bool = False
 
+    # Real-robot fall protection.  Disabled by default so existing tasks keep
+    # their behavior; safety-critical tasks opt in explicitly.
+    fall_protection_enabled: bool = False
+    fall_roll_pitch_threshold_rad: float = 0.7853981633974483  # 45 deg
+    fall_trigger_duration_s: float = 0.12
+
     mujoco: MujocoControllerCfg = MujocoControllerCfg()
     booster: BoosterRobotControllerCfg = BoosterRobotControllerCfg()
     evaluator: Optional[EvaluatorCfg] = None

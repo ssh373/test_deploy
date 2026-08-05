@@ -94,6 +94,9 @@ class BoosterRobotPortal:
         self._head_cmd_last_seen_time = 0.0
         self._head_cmd_valid = False
         self._head_cmd_timeout_s = 2.0
+        self._custom_mode_active = False
+        self._tilt_exceeded_since = None
+        self._safety_damping_triggered = False
 
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -333,6 +336,9 @@ class BoosterRobotPortal:
             # collect state data
             rpy = np.array(low_state_msg.imu_state.rpy, dtype=np.float32)
             gyro = np.array(low_state_msg.imu_state.gyro, dtype=np.float32)
+            self._check_tilt_safety(rpy)
+            if self.exit_event.is_set():
+                return
             dof_pos = np.zeros(self.robot.num_joints, dtype=np.float32)
             dof_vel = np.zeros(self.robot.num_joints, dtype=np.float32)
             fb_torque = np.zeros(self.robot.num_joints, dtype=np.float32)
@@ -390,6 +396,41 @@ class BoosterRobotPortal:
             self.logger.error(f"Error in _low_state_handler: {e}")
             self.running = False
             self.exit_event.set()
+
+    def _check_tilt_safety(self, rpy: np.ndarray) -> None:
+        """Enter damping when excessive roll/pitch persists."""
+        if not getattr(self.cfg, "fall_protection_enabled", False):
+            return
+        if not self._custom_mode_active or self._safety_damping_triggered:
+            return
+        if rpy.size < 2 or not np.isfinite(rpy[:2]).all():
+            self._tilt_exceeded_since = None
+            return
+
+        threshold = float(self.cfg.fall_roll_pitch_threshold_rad)
+        max_tilt = max(abs(float(rpy[0])), abs(float(rpy[1])))
+        now = time.perf_counter()
+        if max_tilt < threshold:
+            self._tilt_exceeded_since = None
+            return
+        if self._tilt_exceeded_since is None:
+            self._tilt_exceeded_since = now
+            return
+        if (now - self._tilt_exceeded_since) < float(self.cfg.fall_trigger_duration_s):
+            return
+
+        self._safety_damping_triggered = True
+        self.is_running = False
+        self.exit_event.set()
+        self.logger.critical(
+            "FALL SAFETY: roll=%.1f deg, pitch=%.1f deg; entering damping mode",
+            math.degrees(float(rpy[0])),
+            math.degrees(float(rpy[1])),
+        )
+        try:
+            self.client.ChangeMode(RobotMode.kDamping)
+        except Exception as exc:
+            self.logger.exception("Failed to enter damping mode: %s", exc)
 
     def create_low_cmd_publisher(self, name):
         self.publish_node = rclpy.create_node(name)
@@ -450,6 +491,7 @@ class BoosterRobotPortal:
 
         # change to custom mode
         self.client.ChangeMode(RobotMode.kCustom)
+        self._custom_mode_active = True
         # for i in range(20):  # try multiple times to make sure mode is changed
         #     self.client.ChangeMode(RobotMode.kCustom)
         #     time.sleep(0.5)
@@ -462,6 +504,8 @@ class BoosterRobotPortal:
         trans = np.linspace(init_joint_pos, prepare_state.joint_pos, num=500)
         start_time = self.timer.get_time()
         for i in range(500):
+            if self.exit_event.is_set():
+                return False
             for j in range(self.robot.num_joints):
                 self.motor_cmd[j].q = trans[i][j]
             self._apply_loco_head_to_motor_cmd()
@@ -604,9 +648,12 @@ class BoosterRobotPortal:
                         break
                 time.sleep(0.1)
 
-        # exit and switch to walking mode
-        self.logger.info("Exiting controller, switching to walking mode...")
-        self.client.ChangeMode(RobotMode.kWalking)
+        if self._safety_damping_triggered:
+            self.logger.warning("Controller exited after fall safety; keeping damping mode.")
+        else:
+            # Normal exit returns control to the standard walking controller.
+            self.logger.info("Exiting controller, switching to walking mode...")
+            self.client.ChangeMode(RobotMode.kWalking)
 
     def __enter__(self) -> BoosterRobotPortal:
         return self
