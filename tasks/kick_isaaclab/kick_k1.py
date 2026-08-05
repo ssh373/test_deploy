@@ -318,6 +318,7 @@ class K1IsaacLabKickPolicyCfg(PolicyCfg):
 @configclass
 class K1IsaacLabKickControllerCfg(ControllerCfg):
     policy_dt: float = 0.02
+    prepare_pass_through_joint_names = ["AAHead_yaw", "Head_pitch"]
     robot = K1_CFG.replace(
         mjcf_path=_MJCF_PATH,
         default_joint_pos=DEFAULT_JOINT_POS,

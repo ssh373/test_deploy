@@ -440,10 +440,35 @@ class BoosterRobotPortal:
 
         prepare_state = self.robot.cfg.prepare_state
         init_joint_pos = self.synced_state.read()[0]['joint_pos']
+        prepare_pass_through_names = set(
+            getattr(self.cfg, "prepare_pass_through_joint_names", [])
+        )
+        unknown_pass_through_names = prepare_pass_through_names.difference(
+            self.robot.cfg.joint_names
+        )
+        if unknown_pass_through_names:
+            raise ValueError(
+                "Unknown prepare pass-through joints: "
+                f"{sorted(unknown_pass_through_names)}"
+            )
+        prepare_pass_through_idx = {
+            self.robot.cfg.joint_names.index(name)
+            for name in prepare_pass_through_names
+        }
+        if prepare_pass_through_names:
+            self.logger.info(
+                "Prepare pass-through joints (zero gain): %s",
+                sorted(prepare_pass_through_names),
+            )
         for i in range(self.robot.num_joints):
             self.motor_cmd[i].q = init_joint_pos[i]
-            self.motor_cmd[i].kp = float(prepare_state.stiffness[i])
-            self.motor_cmd[i].kd = float(prepare_state.damping[i])
+            if i in prepare_pass_through_idx:
+                # Do not fight an external controller such as BT MoveHead.
+                self.motor_cmd[i].kp = 0.0
+                self.motor_cmd[i].kd = 0.0
+            else:
+                self.motor_cmd[i].kp = float(prepare_state.stiffness[i])
+                self.motor_cmd[i].kd = float(prepare_state.damping[i])
 
         self.low_cmd_publisher.publish(self.low_cmd)
         time.sleep(0.1)
@@ -463,7 +488,8 @@ class BoosterRobotPortal:
         start_time = self.timer.get_time()
         for i in range(500):
             for j in range(self.robot.num_joints):
-                self.motor_cmd[j].q = trans[i][j]
+                if j not in prepare_pass_through_idx:
+                    self.motor_cmd[j].q = trans[i][j]
             self.low_cmd_publisher.publish(self.low_cmd)
             while self.timer.get_time() < start_time + (i + 1) * 0.002:
                 time.sleep(0.0002)

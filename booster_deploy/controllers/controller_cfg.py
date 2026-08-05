@@ -92,6 +92,10 @@ class ControllerCfg:
     vel_command: Optional[VelocityCommandCfg] = None
     policy: PolicyCfg = MISSING
 
+    # Joints owned by an external controller while entering custom mode.
+    # These joints are left at zero gain during the prepare interpolation.
+    prepare_pass_through_joint_names: List[str] = []
+
     mujoco: MujocoControllerCfg = MujocoControllerCfg()
     booster: BoosterRobotControllerCfg = BoosterRobotControllerCfg()
     evaluator: Optional[EvaluatorCfg] = None
