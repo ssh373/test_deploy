@@ -92,9 +92,9 @@ class ControllerCfg:
     vel_command: Optional[VelocityCommandCfg] = None
     policy: PolicyCfg = MISSING
 
-    # Joints owned by an external controller while entering custom mode.
-    # These joints are left at zero gain during the prepare interpolation.
-    prepare_pass_through_joint_names: List[str] = []
+    # Mirror Brain's RotateHead RPC into low-level neck joint commands.  This
+    # is needed in custom mode, where the locomotion API no longer moves them.
+    head_control_from_loco_api: bool = False
 
     mujoco: MujocoControllerCfg = MujocoControllerCfg()
     booster: BoosterRobotControllerCfg = BoosterRobotControllerCfg()

@@ -115,15 +115,14 @@ class K1IsaacLabKickPolicy(Policy):
             reset(torch.ones(1, dtype=torch.bool, device=self.device))
 
     def reset(self) -> None:
-        # The behavior tree owns both neck joints through MoveHead.  On the
-        # real controller, publish zero-gain pass-through entries so this kick
-        # policy neither tracks the ball nor overwrites the BT head target.
+        # In custom mode the Booster RotateHead API does not actuate the neck
+        # directly.  The portal captures that RPC and this controller applies
+        # the same target through the low-level neck joints.
         if not hasattr(self.controller, "mj_model"):
-            head_names = ("AAHead_yaw", "Head_pitch")
-            self.controller.pass_through_joint_idx = [
-                self.robot.cfg.joint_names.index(name) for name in head_names
-            ]
-            self.controller.head_track_from_loco_api = False
+            self.controller.pass_through_joint_idx = []
+            self.controller.head_track_yaw_idx = self.robot.cfg.joint_names.index("AAHead_yaw")
+            self.controller.head_track_pitch_idx = self.robot.cfg.joint_names.index("Head_pitch")
+            self.controller.head_track_from_loco_api = True
             self.controller.head_track_from_ball = False
         self.last_action.zero_()
         self._diagnostic_steps = 0
@@ -318,7 +317,7 @@ class K1IsaacLabKickPolicyCfg(PolicyCfg):
 @configclass
 class K1IsaacLabKickControllerCfg(ControllerCfg):
     policy_dt: float = 0.02
-    prepare_pass_through_joint_names = ["AAHead_yaw", "Head_pitch"]
+    head_control_from_loco_api: bool = True
     robot = K1_CFG.replace(
         mjcf_path=_MJCF_PATH,
         default_joint_pos=DEFAULT_JOINT_POS,

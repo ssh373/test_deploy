@@ -440,35 +440,10 @@ class BoosterRobotPortal:
 
         prepare_state = self.robot.cfg.prepare_state
         init_joint_pos = self.synced_state.read()[0]['joint_pos']
-        prepare_pass_through_names = set(
-            getattr(self.cfg, "prepare_pass_through_joint_names", [])
-        )
-        unknown_pass_through_names = prepare_pass_through_names.difference(
-            self.robot.cfg.joint_names
-        )
-        if unknown_pass_through_names:
-            raise ValueError(
-                "Unknown prepare pass-through joints: "
-                f"{sorted(unknown_pass_through_names)}"
-            )
-        prepare_pass_through_idx = {
-            self.robot.cfg.joint_names.index(name)
-            for name in prepare_pass_through_names
-        }
-        if prepare_pass_through_names:
-            self.logger.info(
-                "Prepare pass-through joints (zero gain): %s",
-                sorted(prepare_pass_through_names),
-            )
         for i in range(self.robot.num_joints):
             self.motor_cmd[i].q = init_joint_pos[i]
-            if i in prepare_pass_through_idx:
-                # Do not fight an external controller such as BT MoveHead.
-                self.motor_cmd[i].kp = 0.0
-                self.motor_cmd[i].kd = 0.0
-            else:
-                self.motor_cmd[i].kp = float(prepare_state.stiffness[i])
-                self.motor_cmd[i].kd = float(prepare_state.damping[i])
+            self.motor_cmd[i].kp = float(prepare_state.stiffness[i])
+            self.motor_cmd[i].kd = float(prepare_state.damping[i])
 
         self.low_cmd_publisher.publish(self.low_cmd)
         time.sleep(0.1)
@@ -488,8 +463,8 @@ class BoosterRobotPortal:
         start_time = self.timer.get_time()
         for i in range(500):
             for j in range(self.robot.num_joints):
-                if j not in prepare_pass_through_idx:
-                    self.motor_cmd[j].q = trans[i][j]
+                self.motor_cmd[j].q = trans[i][j]
+            self._apply_loco_head_to_motor_cmd()
             self.low_cmd_publisher.publish(self.low_cmd)
             while self.timer.get_time() < start_time + (i + 1) * 0.002:
                 time.sleep(0.0002)
@@ -502,7 +477,10 @@ class BoosterRobotPortal:
         while not self.exit_event.is_set():
             if self.remoteControlService.start_rl_gait():
                 break
-            time.sleep(0.1)
+            # Keep forwarding BT MoveHead while waiting for the RL start key.
+            if self._apply_loco_head_to_motor_cmd():
+                self.low_cmd_publisher.publish(self.low_cmd)
+            time.sleep(0.02)
 
         if self.exit_event.is_set():
             return False
@@ -520,6 +498,23 @@ class BoosterRobotPortal:
         self.logger.info("Inference process started")
 
         print(f"{self.remoteControlService.get_operation_hint()}")
+        return True
+
+    def _apply_loco_head_to_motor_cmd(self) -> bool:
+        """Copy the latest Brain RotateHead RPC into low-level neck targets."""
+        if not getattr(self.cfg, "head_control_from_loco_api", False):
+            return False
+        if not self._head_cmd_valid:
+            return False
+        if (time.perf_counter() - self._head_cmd_last_seen_time) > self._head_cmd_timeout_s:
+            return False
+
+        yaw_idx = self.robot.cfg.joint_names.index("AAHead_yaw")
+        pitch_idx = self.robot.cfg.joint_names.index("Head_pitch")
+        yaw_cmd = max(-1.0, min(1.0, float(self._head_cmd_yaw)))
+        pitch_cmd = max(-0.35, min(0.86, float(self._head_cmd_pitch)))
+        self.motor_cmd[yaw_idx].q = yaw_cmd
+        self.motor_cmd[pitch_idx].q = pitch_cmd
         return True
 
     def cleanup(self) -> None:
